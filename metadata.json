@@ -1,8 +1,6 @@
 {
-  "name": "mddorma",
-  "description": "MDDorma Android application for watching Asian dramas online in HD.",
+  "name": "MDDorma",
+  "description": "Aplicación oficial de streaming para ver doramas online en MDDorma",
   "requestFramePermissions": [],
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

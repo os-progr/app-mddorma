@@ -1,4 +1,6 @@
-<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">mddorma</string>
+    <string name="app_name">MDDorma</string>
+    <string name="error_title">Sin conexión o error al cargar</string>
+    <string name="error_message">No pudimos conectar con MDDorma. Por favor, verifica tu conexión a internet o intenta nuevamente.</string>
+    <string name="retry">Reintentar</string>
 </resources>
