@@ -22,6 +22,7 @@ import android.webkit.CookieManager
 import android.webkit.DownloadListener
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -88,6 +89,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Asegurar directorios de caché de WebView antes de inicializar la vista
+        MddormaApp.ensureWebViewCacheDirectories(applicationContext)
+
         // Ajuste automático respetando los límites de pantalla (Safe Areas / Barra de estado / Botones)
         WindowCompat.setDecorFitsSystemWindows(window, true)
         val insetsController = WindowCompat.getInsetsController(window, window.decorView)
@@ -126,9 +130,9 @@ class MainActivity : ComponentActivity() {
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
         settings.databaseEnabled = true
-        settings.allowFileAccess = true
+        settings.allowFileAccess = false
         settings.allowContentAccess = true
-        settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+        settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
         settings.cacheMode = WebSettings.LOAD_DEFAULT
         settings.mediaPlaybackRequiresUserGesture = false
         settings.loadWithOverviewMode = true
@@ -197,6 +201,16 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+                try {
+                    val parent = view?.parent as? android.view.ViewGroup
+                    parent?.removeView(view)
+                    view?.destroy()
+                } catch (_: Exception) {}
+                recreate()
+                return true
+            }
+
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 val url = request?.url?.toString() ?: return false
 
@@ -210,13 +224,31 @@ class MainActivity : ComponentActivity() {
                     return false
                 }
 
+                // Manejo de URLs con esquema intent://
+                if (url.startsWith("intent:")) {
+                    return try {
+                        val parsedIntent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
+                        if (parsedIntent.resolveActivity(packageManager) != null) {
+                            startActivity(parsedIntent)
+                        } else {
+                            val fallbackUrl = parsedIntent.getStringExtra("browser_fallback_url")
+                            if (!fallbackUrl.isNullOrEmpty()) {
+                                view?.loadUrl(fallbackUrl)
+                            }
+                        }
+                        true
+                    } catch (e: Exception) {
+                        true
+                    }
+                }
+
                 // 2. Manejar enlaces externos (WhatsApp, Telegram, Teléfonos, Mail)
                 return try {
                     val intent = Intent(Intent.ACTION_VIEW, request.url)
                     startActivity(intent)
                     true
                 } catch (e: Exception) {
-                    false
+                    true
                 }
             }
         }
@@ -350,9 +382,10 @@ class MainActivity : ComponentActivity() {
     // 🚀 Sistema de Verificación Automática de Actualizaciones
     private fun checkForUpdates() {
         thread {
+            var conn: HttpURLConnection? = null
             try {
                 val url = URL(UPDATE_CHECK_URL)
-                val conn = url.openConnection() as HttpURLConnection
+                conn = url.openConnection() as HttpURLConnection
                 conn.connectTimeout = 5000
                 conn.readTimeout = 5000
                 conn.requestMethod = "GET"
@@ -380,6 +413,8 @@ class MainActivity : ComponentActivity() {
                 }
             } catch (e: Exception) {
                 // Ignorar errores de red en segundo plano
+            } finally {
+                conn?.disconnect()
             }
         }
     }

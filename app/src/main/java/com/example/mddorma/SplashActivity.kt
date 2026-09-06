@@ -20,6 +20,9 @@ class SplashActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Pre-inicializar directorios de caché de WebView con anticipación
+        MddormaApp.ensureWebViewCacheDirectories(applicationContext)
+
         // Modo pantalla completa inmersiva
         WindowCompat.setDecorFitsSystemWindows(window, false)
         val controller = WindowInsetsControllerCompat(window, window.decorView)
