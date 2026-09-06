@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/splash_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/splash_background"
+    android:gravity="center">
+
+    <!-- Container Centrado -->
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_centerInParent="true"
+        android:gravity="center"
+        android:orientation="vertical">
+
+        <!-- Logo Oficial MDDorma -->
+        <ImageView
+            android:id="@+id/splash_logo"
+            android:layout_width="180dp"
+            android:layout_height="180dp"
+            android:scaleType="fitCenter"
+            android:adjustViewBounds="true"
+            android:src="@drawable/logo_mddorma"
+            android:contentDescription="@string/app_name" />
+
+        <!-- Nombre de la App -->
+        <TextView
+            android:id="@+id/splash_app_name"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="mddorma"
+            android:textColor="#FFFFFF"
+            android:textSize="38sp"
+            android:textStyle="bold"
+            android:fontFamily="sans-serif-medium"
+            android:letterSpacing="0.12"
+            android:shadowColor="#80A855F7"
+            android:shadowDx="0"
+            android:shadowDy="0"
+            android:shadowRadius="16" />
+
+        <!-- Subtítulo -->
+        <TextView
+            android:id="@+id/splash_subtitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="Doramas Online en HD"
+            android:textColor="#D8B4FE"
+            android:textSize="14sp"
+            android:letterSpacing="0.05"
+            android:fontFamily="sans-serif-light" />
+
+    </LinearLayout>
+
+    <!-- Indicador de carga sutil al fondo -->
+    <ProgressBar
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:layout_alignParentBottom="true"
+        android:layout_centerHorizontal="true"
+        android:layout_marginBottom="40dp"
+        android:indeterminateTint="#C084FC" />
+
+</RelativeLayout>
