@@ -439,10 +439,10 @@ class MainActivity : ComponentActivity() {
         fun isAndroidApp(): Boolean = true
 
         @JavascriptInterface
-        fun getVersionCode(): Int = 12
+        fun getVersionCode(): Int = 13
 
         @JavascriptInterface
-        fun getVersionName(): String = "3.2"
+        fun getVersionName(): String = "3.3"
 
         @JavascriptInterface
         fun signInWithGoogle() {
@@ -475,7 +475,7 @@ class MainActivity : ComponentActivity() {
         // User Agent optimizado para compatibilidad total con Google OAuth e identificación In-App
         val rawUserAgent = settings.userAgentString
         val cleanUserAgent = rawUserAgent.replace("; wv", "")
-                                         .replace(Regex("Version/\\d+\\.\\d+\\s*"), "") + " MDDormaApp/3.2"
+                                         .replace(Regex("Version/\\d+\\.\\d+\\s*"), "") + " MDDormaApp/3.3"
         settings.userAgentString = cleanUserAgent
 
         val cookieManager = CookieManager.getInstance()
