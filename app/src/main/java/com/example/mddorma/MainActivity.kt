@@ -43,9 +43,12 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -56,6 +59,7 @@ import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
+import com.google.firebase.messaging.FirebaseMessaging
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -149,6 +153,14 @@ class MainActivity : ComponentActivity() {
             if (e.statusCode != 16 && e.statusCode != 12501) {
                 Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
             }
+        }
+    }
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            Log.d("MDDormaFCM", "Permiso de notificaciones concedido")
         }
     }
 
@@ -256,13 +268,52 @@ class MainActivity : ComponentActivity() {
             }
         })
 
+        val notificationUrl = intent?.getStringExtra("url")
         if (savedInstanceState == null) {
-            webView.loadUrl(BASE_URL)
+            if (!notificationUrl.isNullOrEmpty()) {
+                webView.loadUrl(notificationUrl)
+            } else {
+                webView.loadUrl(BASE_URL)
+            }
         } else {
             webView.restoreState(savedInstanceState)
         }
 
+        setupFirebaseMessaging()
         checkForAppUpdates()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val targetUrl = intent.getStringExtra("url")
+        if (!targetUrl.isNullOrEmpty()) {
+            webView.loadUrl(targetUrl)
+        }
+    }
+
+    private fun setupFirebaseMessaging() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+
+        try {
+            // Suscribir automáticamente a los canales de estrenos de doramas
+            FirebaseMessaging.getInstance().subscribeToTopic("estrenos_doramas")
+            FirebaseMessaging.getInstance().subscribeToTopic("todos_usuarios")
+
+            // Obtener el token FCM y registrarlo en el servidor
+            FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+                if (task.isSuccessful && task.result != null) {
+                    val token = task.result
+                    FcmMessagingService.sendTokenToServer(token)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("MDDormaFCM", "Error configurando FirebaseMessaging: ${e.message}")
+        }
     }
 
     private fun setupGoogleSignIn() {
