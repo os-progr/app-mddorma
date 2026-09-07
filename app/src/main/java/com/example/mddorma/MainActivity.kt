@@ -254,6 +254,8 @@ class MainActivity : ComponentActivity() {
         } else {
             webView.restoreState(savedInstanceState)
         }
+
+        checkForAppUpdates()
     }
 
     private fun setupGoogleSignIn() {
@@ -366,10 +368,81 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // ── In-App Update Checker ──
+    private fun checkForAppUpdates() {
+        thread {
+            try {
+                val currentVersionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    packageManager.getPackageInfo(packageName, 0).longVersionCode.toInt()
+                } else {
+                    @Suppress("DEPRECATION")
+                    packageManager.getPackageInfo(packageName, 0).versionCode
+                }
+
+                val url = URL("https://mddorma.com/api/check_app_update.php")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.connectTimeout = 5000
+                conn.readTimeout = 5000
+                conn.requestMethod = "GET"
+
+                if (conn.responseCode == 200) {
+                    val reader = BufferedReader(InputStreamReader(conn.inputStream))
+                    val response = reader.use { it.readText() }
+                    val json = JSONObject(response)
+
+                    if (json.optBoolean("success", false)) {
+                        val latestCode = json.optInt("latest_version_code", 0)
+                        val latestName = json.optString("latest_version_name", "")
+                        val apkUrl = json.optString("apk_url", "https://mddorma.com/mddorma.apk")
+                        val title = json.optString("title", "¡Nueva versión disponible!")
+                        val notes = json.optString("release_notes", "")
+                        val forceUpdate = json.optBoolean("force_update", false)
+
+                        if (latestCode > currentVersionCode) {
+                            runOnUiThread {
+                                showUpdateDialog(title, latestName, notes, apkUrl, forceUpdate)
+                            }
+                        }
+                    }
+                }
+                conn.disconnect()
+            } catch (e: Exception) {
+                Log.d("MDDormaUpdate", "Update check skipped: ${e.message}")
+            }
+        }
+    }
+
+    private fun showUpdateDialog(title: String, versionName: String, notes: String, apkUrl: String, forceUpdate: Boolean) {
+        if (isFinishing || isDestroyed) return
+        val builder = android.app.AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage("$notes\n\n¿Deseas descargar e instalar la versión $versionName ahora?")
+            .setPositiveButton("Actualizar Ahora") { _, _ ->
+                try {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(apkUrl))
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    Toast.makeText(this, "Error al abrir el enlace de descarga", Toast.LENGTH_SHORT).show()
+                }
+            }
+        if (!forceUpdate) {
+            builder.setNegativeButton("Más tarde", null)
+        } else {
+            builder.setCancelable(false)
+        }
+        builder.show()
+    }
+
     // ── Puente JavaScript para comunicación WebView <-> Android Nativo ──
     inner class AndroidAuthBridge {
         @JavascriptInterface
         fun isAndroidApp(): Boolean = true
+
+        @JavascriptInterface
+        fun getVersionCode(): Int = 12
+
+        @JavascriptInterface
+        fun getVersionName(): String = "3.2"
 
         @JavascriptInterface
         fun signInWithGoogle() {
@@ -402,7 +475,7 @@ class MainActivity : ComponentActivity() {
         // User Agent optimizado para compatibilidad total con Google OAuth e identificación In-App
         val rawUserAgent = settings.userAgentString
         val cleanUserAgent = rawUserAgent.replace("; wv", "")
-                                         .replace(Regex("Version/\\d+\\.\\d+\\s*"), "") + " MDDormaApp/2.8"
+                                         .replace(Regex("Version/\\d+\\.\\d+\\s*"), "") + " MDDormaApp/3.2"
         settings.userAgentString = cleanUserAgent
 
         val cookieManager = CookieManager.getInstance()
