@@ -349,80 +349,48 @@ class MainActivity : ComponentActivity() {
 
     private fun syncGoogleAuthWithBackend(idToken: String, userName: String) {
         runOnUiThread {
-            progressBar.visibility = View.VISIBLE
-            Toast.makeText(this, "Conectando cuenta con mddorma.com...", Toast.LENGTH_SHORT).show()
-        }
-
-        thread {
-            try {
-                val url = URL(AUTH_SYNC_URL)
-                val conn = url.openConnection() as HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.doOutput = true
-                conn.doInput = true
-                conn.connectTimeout = 10000
-                conn.readTimeout = 10000
-                conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-                conn.setRequestProperty("User-Agent", webView.settings.userAgentString)
-
-                // Enviar cookies existentes del WebView (para mantener sesión o CSRF)
-                val existingCookies = CookieManager.getInstance().getCookie(BASE_URL)
-                if (!existingCookies.isNullOrEmpty()) {
-                    conn.setRequestProperty("Cookie", existingCookies)
-                }
-
-                val postData = "credential=" + URLEncoder.encode(idToken, "UTF-8")
-                val writer = OutputStreamWriter(conn.outputStream)
-                writer.write(postData)
-                writer.flush()
-                writer.close()
-
-                val responseCode = conn.responseCode
-
-                // Extraer cookies de sesión ANTES de leer el body y ANTES de disconnect()
-                val cookieManager = CookieManager.getInstance()
-                cookieManager.setAcceptCookie(true)
-                val headerFields = conn.headerFields
-                val cookiesHeader = headerFields["Set-Cookie"] ?: headerFields["set-cookie"]
-                if (cookiesHeader != null) {
-                    for (cookie in cookiesHeader) {
-                        cookieManager.setCookie("https://mddorma.com", cookie)
-                        cookieManager.setCookie(".mddorma.com", cookie)
-                        cookieManager.setCookie("mddorma.com", cookie)
+            progressBar.visibility = View.GONE
+            val safeToken = idToken.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "")
+            val safeUserName = userName.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "")
+            val jsCode = """
+                (function() {
+                    try {
+                        if (typeof handleGoogleLogin === 'function') {
+                            handleGoogleLogin({ credential: '$safeToken' });
+                        } else {
+                            var body = 'credential=' + encodeURIComponent('$safeToken');
+                            var csrf = window.MDD_CSRF_TOKEN || (document.querySelector('input[name="csrf_token"]') ? document.querySelector('input[name="csrf_token"]').value : '');
+                            if (csrf) body += '&csrf_token=' + encodeURIComponent(csrf);
+                            
+                            fetch('/api/google_login.php', {
+                                method: 'POST',
+                                headers: { 
+                                    'Content-Type': 'application/x-www-form-urlencoded',
+                                    'X-Requested-With': 'com.example.mddorma'
+                                },
+                                body: body
+                            })
+                            .then(function(r) { return r.json(); })
+                            .then(function(d) {
+                                if (d && d.success) {
+                                    if (window.showToast) {
+                                        window.showToast('¡Bienvenido, ' + (d.nombre || '$safeUserName') + '!', 'success');
+                                    }
+                                    setTimeout(function() { window.location.href = '/index.php'; }, 300);
+                                } else {
+                                    alert((d && d.message) ? d.message : 'Error al iniciar sesión con Google');
+                                }
+                            })
+                            .catch(function(e) {
+                                alert('Error de conexión con el servidor: ' + e.message);
+                            });
+                        }
+                    } catch(err) {
+                        console.error('Auth error:', err);
                     }
-                    cookieManager.setCookie("https://mddorma.com", "mddorma_in_app=1; path=/")
-                    cookieManager.flush()
-                }
-
-                val reader = BufferedReader(InputStreamReader(if (responseCode in 200..299) conn.inputStream else conn.errorStream))
-                val responseBody = reader.use { it.readText() }
-                conn.disconnect()
-
-                val json = try { JSONObject(responseBody) } catch (e: Exception) { JSONObject() }
-                val success = json.optBoolean("success", false)
-
-                runOnUiThread {
-                    progressBar.visibility = View.GONE
-                    if (success) {
-                        Toast.makeText(this@MainActivity, "¡Bienvenido, $userName!", Toast.LENGTH_LONG).show()
-                        // Navegar a la portada con sesión activa
-                        cookieManager.flush()
-                        webView.postDelayed({
-                            webView.loadUrl(BASE_URL + "/index.php")
-                        }, 250)
-                    } else {
-                        val msg = json.optString("message", "Error al sincronizar con el servidor")
-                        Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
-                    }
-                }
-
-            } catch (e: Exception) {
-                Log.e("MDDormaAuth", "Error syncing with backend: ${e.message}", e)
-                runOnUiThread {
-                    progressBar.visibility = View.GONE
-                    Toast.makeText(this@MainActivity, "Error de red al conectar con el servidor", Toast.LENGTH_SHORT).show()
-                }
-            }
+                })();
+            """.trimIndent()
+            webView.evaluateJavascript(jsCode, null)
         }
     }
 
@@ -497,10 +465,10 @@ class MainActivity : ComponentActivity() {
         fun isAndroidApp(): Boolean = true
 
         @JavascriptInterface
-        fun getVersionCode(): Int = 14
+        fun getVersionCode(): Int = 15
 
         @JavascriptInterface
-        fun getVersionName(): String = "3.4"
+        fun getVersionName(): String = "3.5"
 
         @JavascriptInterface
         fun signInWithGoogle() {
@@ -533,7 +501,7 @@ class MainActivity : ComponentActivity() {
         // User Agent optimizado para compatibilidad total con Google OAuth e identificación In-App
         val rawUserAgent = settings.userAgentString
         val cleanUserAgent = rawUserAgent.replace("; wv", "")
-                                         .replace(Regex("Version/\\d+\\.\\d+\\s*"), "") + " MDDormaApp/3.4"
+                                         .replace(Regex("Version/\\d+\\.\\d+\\s*"), "") + " MDDormaApp/3.5"
         settings.userAgentString = cleanUserAgent
 
         val cookieManager = CookieManager.getInstance()
