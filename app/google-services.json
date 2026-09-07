@@ -12,7 +12,20 @@
           "package_name": "com.mddorma.app"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "707169647548-ivc9f68uvc3aamlsk491uuq0287hdg9s.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.mddorma.app",
+            "certificate_hash": "edb43f97dba220caf1ee0024d5f4a29704a50a6b"
+          }
+        },
+        {
+          "client_id": "707169647548-nj4cokkr5css8cm2uuasq2oafmpffc5u.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyDPlhE2PIprCQXurzlwVXJ_lKtFugvC_uQ"
@@ -20,7 +33,12 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "707169647548-nj4cokkr5css8cm2uuasq2oafmpffc5u.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }

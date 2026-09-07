@@ -160,7 +160,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val BASE_URL = "https://mddorma.com"
-        private const val GOOGLE_WEB_CLIENT_ID = "614867100474-4ilca83g5q0pkvs3int4429dcaps2fj4.apps.googleusercontent.com"
+        private const val GOOGLE_WEB_CLIENT_ID = "707169647548-nj4cokkr5css8cm2uuasq2oafmpffc5u.apps.googleusercontent.com"
         private const val AUTH_SYNC_URL = "https://mddorma.com/api/google_login.php"
     }
 
@@ -446,10 +446,10 @@ class MainActivity : ComponentActivity() {
         fun isAndroidApp(): Boolean = true
 
         @JavascriptInterface
-        fun getVersionCode(): Int = 13
+        fun getVersionCode(): Int = 14
 
         @JavascriptInterface
-        fun getVersionName(): String = "3.3"
+        fun getVersionName(): String = "3.4"
 
         @JavascriptInterface
         fun signInWithGoogle() {
@@ -482,7 +482,7 @@ class MainActivity : ComponentActivity() {
         // User Agent optimizado para compatibilidad total con Google OAuth e identificación In-App
         val rawUserAgent = settings.userAgentString
         val cleanUserAgent = rawUserAgent.replace("; wv", "")
-                                         .replace(Regex("Version/\\d+\\.\\d+\\s*"), "") + " MDDormaApp/3.3"
+                                         .replace(Regex("Version/\\d+\\.\\d+\\s*"), "") + " MDDormaApp/3.4"
         settings.userAgentString = cleanUserAgent
 
         val cookieManager = CookieManager.getInstance()
