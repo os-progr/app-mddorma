@@ -128,19 +128,26 @@ class MainActivity : ComponentActivity() {
     private val googleSignInLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
-            try {
-                val account: GoogleSignInAccount = task.getResult(ApiException::class.java)
-                val idToken = account.idToken
-                if (!idToken.isNullOrEmpty()) {
-                    syncGoogleAuthWithBackend(idToken, account.displayName ?: "Usuario")
-                } else {
-                    Toast.makeText(this, "No se pudo obtener el token de Google", Toast.LENGTH_SHORT).show()
-                }
-            } catch (e: ApiException) {
-                Log.e("MDDormaAuth", "Google sign in failed: code ${e.statusCode}", e)
-                Toast.makeText(this, "Error al autenticar con Google (código: ${e.statusCode})", Toast.LENGTH_SHORT).show()
+        val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+        try {
+            val account: GoogleSignInAccount = task.getResult(ApiException::class.java)
+            val idToken = account.idToken
+            if (!idToken.isNullOrEmpty()) {
+                syncGoogleAuthWithBackend(idToken, account.displayName ?: "Usuario")
+            } else {
+                Toast.makeText(this, "No se pudo obtener el token de Google (idToken nulo)", Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: ApiException) {
+            Log.e("MDDormaAuth", "Google sign in failed: status code ${e.statusCode}", e)
+            val errorMsg = when (e.statusCode) {
+                10 -> "Error 10 (DEVELOPER_ERROR): Falta registrar la huella SHA-1 en Firebase/Google Cloud."
+                12500 -> "Error 12500: Fallo de autenticación en Google Play Services."
+                7 -> "Error 7: Sin conexión con Google."
+                16, 12501 -> "Inicio de sesión cancelado."
+                else -> "Error al autenticar con Google (código: ${e.statusCode})"
+            }
+            if (e.statusCode != 16 && e.statusCode != 12501) {
+                Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -323,12 +330,16 @@ class MainActivity : ComponentActivity() {
 
                 // Extraer cookies de sesión ANTES de leer el body y ANTES de disconnect()
                 val cookieManager = CookieManager.getInstance()
+                cookieManager.setAcceptCookie(true)
                 val headerFields = conn.headerFields
                 val cookiesHeader = headerFields["Set-Cookie"] ?: headerFields["set-cookie"]
                 if (cookiesHeader != null) {
                     for (cookie in cookiesHeader) {
-                        cookieManager.setCookie(BASE_URL, cookie)
+                        cookieManager.setCookie("https://mddorma.com", cookie)
+                        cookieManager.setCookie(".mddorma.com", cookie)
+                        cookieManager.setCookie("mddorma.com", cookie)
                     }
+                    cookieManager.setCookie("https://mddorma.com", "mddorma_in_app=1; path=/")
                     cookieManager.flush()
                 }
 
@@ -343,15 +354,11 @@ class MainActivity : ComponentActivity() {
                     progressBar.visibility = View.GONE
                     if (success) {
                         Toast.makeText(this@MainActivity, "¡Bienvenido, $userName!", Toast.LENGTH_LONG).show()
-                        // Esperar 400ms para garantizar que las cookies de sesión se persistan al WebView
+                        // Navegar a la portada con sesión activa
+                        cookieManager.flush()
                         webView.postDelayed({
-                            val current = webView.url ?: BASE_URL
-                            if (current.contains("ingresar.php")) {
-                                webView.loadUrl(BASE_URL)
-                            } else {
-                                webView.reload()
-                            }
-                        }, 400)
+                            webView.loadUrl(BASE_URL + "/index.php")
+                        }, 250)
                     } else {
                         val msg = json.optString("message", "Error al sincronizar con el servidor")
                         Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
