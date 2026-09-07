@@ -10,3 +10,8 @@
 .cxx
 local.properties
 app/build
+*.jks
+*.keystore
+secrets.xml
+*.p12
+*.key
