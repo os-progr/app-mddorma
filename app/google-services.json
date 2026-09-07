@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "707169647548",
+    "project_id": "mddorma-6609d",
+    "storage_bucket": "mddorma-6609d.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:707169647548:android:4f315eb47baf86f18009b9",
+        "android_client_info": {
+          "package_name": "com.mddorma.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDPlhE2PIprCQXurzlwVXJ_lKtFugvC_uQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
