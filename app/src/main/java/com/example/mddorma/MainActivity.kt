@@ -1,6 +1,7 @@
 package com.example.mddorma
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.Intent
@@ -17,6 +18,7 @@ import android.net.NetworkRequest
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.util.Rational
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -24,7 +26,9 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -41,11 +45,25 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInAccount
+import com.google.android.gms.auth.api.signin.GoogleSignInClient
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.ApiException
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
+import kotlin.concurrent.thread
 
 class MainActivity : ComponentActivity() {
 
@@ -81,6 +99,52 @@ class MainActivity : ComponentActivity() {
     private var initialVolume = 0
     private var isDraggingFullscreenGesture = false
 
+    // ── Selector de Archivos Nativo (Fotos de perfil, adjuntos de chat, etc.) ──
+    private var fileUploadCallback: ValueCallback<Array<Uri>>? = null
+    private val fileChooserLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (fileUploadCallback != null) {
+            val results: Array<Uri>? = if (result.resultCode == Activity.RESULT_OK) {
+                val dataString = result.data?.dataString
+                val clipData = result.data?.clipData
+                if (clipData != null) {
+                    Array(clipData.itemCount) { i -> clipData.getItemAt(i).uri }
+                } else if (dataString != null) {
+                    arrayOf(Uri.parse(dataString))
+                } else {
+                    null
+                }
+            } else {
+                null
+            }
+            fileUploadCallback?.onReceiveValue(results)
+            fileUploadCallback = null
+        }
+    }
+
+    // ── Google Sign-In Nativo / Firebase Auth Bridge ──
+    private var googleSignInClient: GoogleSignInClient? = null
+    private val googleSignInLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+            try {
+                val account: GoogleSignInAccount = task.getResult(ApiException::class.java)
+                val idToken = account.idToken
+                if (!idToken.isNullOrEmpty()) {
+                    syncGoogleAuthWithBackend(idToken, account.displayName ?: "Usuario")
+                } else {
+                    Toast.makeText(this, "No se pudo obtener el token de Google", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: ApiException) {
+                Log.e("MDDormaAuth", "Google sign in failed: code ${e.statusCode}", e)
+                Toast.makeText(this, "Error al autenticar con Google (código: ${e.statusCode})", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     private val hideHudRunnable = Runnable {
         gestureHud.animate().alpha(0f).setDuration(250).withEndAction {
             gestureHud.visibility = View.GONE
@@ -89,6 +153,8 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val BASE_URL = "https://mddorma.com"
+        private const val GOOGLE_WEB_CLIENT_ID = "614867100474-4ilca83g5q0pkvs3int4429dcaps2fj4.apps.googleusercontent.com"
+        private const val AUTH_SYNC_URL = "https://mddorma.com/api/google_login.php"
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -113,6 +179,9 @@ class MainActivity : ComponentActivity() {
         hudProgressBar = findViewById(R.id.hud_progress_bar)
         hudText = findViewById(R.id.hud_text)
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+        // Configuración de Google Sign-In Nativo
+        setupGoogleSignIn()
 
         // Paleta visual de MDDorma para SwipeRefreshLayout
         swipeRefreshLayout.setColorSchemeColors(
@@ -187,6 +256,124 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun setupGoogleSignIn() {
+        try {
+            val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+                .requestIdToken(GOOGLE_WEB_CLIENT_ID)
+                .requestEmail()
+                .requestProfile()
+                .build()
+            googleSignInClient = GoogleSignIn.getClient(this, gso)
+        } catch (e: Exception) {
+            Log.e("MDDormaAuth", "Error configuring GoogleSignIn: ${e.message}", e)
+        }
+    }
+
+    fun launchGoogleSignIn() {
+        runOnUiThread {
+            try {
+                googleSignInClient?.signOut()?.addOnCompleteListener {
+                    val signInIntent = googleSignInClient?.signInIntent
+                    if (signInIntent != null) {
+                        googleSignInLauncher.launch(signInIntent)
+                    } else {
+                        Toast.makeText(this, "Servicio de Google no inicializado", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("MDDormaAuth", "Error launching Google Sign In: ${e.message}", e)
+                Toast.makeText(this, "Error al abrir Google Sign-In", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun syncGoogleAuthWithBackend(idToken: String, userName: String) {
+        runOnUiThread {
+            progressBar.visibility = View.VISIBLE
+            Toast.makeText(this, "Conectando cuenta con mddorma.com...", Toast.LENGTH_SHORT).show()
+        }
+
+        thread {
+            try {
+                val url = URL(AUTH_SYNC_URL)
+                val conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.doInput = true
+                conn.connectTimeout = 10000
+                conn.readTimeout = 10000
+                conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+                conn.setRequestProperty("User-Agent", webView.settings.userAgentString)
+
+                // Enviar cookies existentes del WebView (para mantener sesión o CSRF)
+                val existingCookies = CookieManager.getInstance().getCookie(BASE_URL)
+                if (!existingCookies.isNullOrEmpty()) {
+                    conn.setRequestProperty("Cookie", existingCookies)
+                }
+
+                val postData = "credential=" + URLEncoder.encode(idToken, "UTF-8")
+                val writer = OutputStreamWriter(conn.outputStream)
+                writer.write(postData)
+                writer.flush()
+                writer.close()
+
+                val responseCode = conn.responseCode
+                val reader = BufferedReader(InputStreamReader(if (responseCode in 200..299) conn.inputStream else conn.errorStream))
+                val responseBody = reader.use { it.readText() }
+                conn.disconnect()
+
+                // Extraer y guardar las nuevas cookies de sesión (PHPSESSID) devueltas por el servidor
+                val headerFields = conn.headerFields
+                val cookiesHeader = headerFields["Set-Cookie"]
+                if (cookiesHeader != null) {
+                    val cookieManager = CookieManager.getInstance()
+                    for (cookie in cookiesHeader) {
+                        cookieManager.setCookie(BASE_URL, cookie)
+                    }
+                    cookieManager.flush()
+                }
+
+                val json = try { JSONObject(responseBody) } catch (e: Exception) { JSONObject() }
+                val success = json.optBoolean("success", false)
+
+                runOnUiThread {
+                    progressBar.visibility = View.GONE
+                    if (success) {
+                        Toast.makeText(this@MainActivity, "¡Bienvenido, $userName!", Toast.LENGTH_LONG).show()
+                        // Recargar la página actual o ir a perfil con sesión activa
+                        val current = webView.url ?: BASE_URL
+                        if (current.contains("ingresar.php")) {
+                            webView.loadUrl(BASE_URL)
+                        } else {
+                            webView.reload()
+                        }
+                    } else {
+                        val msg = json.optString("message", "Error al sincronizar con el servidor")
+                        Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+                    }
+                }
+
+            } catch (e: Exception) {
+                Log.e("MDDormaAuth", "Error syncing with backend: ${e.message}", e)
+                runOnUiThread {
+                    progressBar.visibility = View.GONE
+                    Toast.makeText(this@MainActivity, "Error de red al conectar con el servidor", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    // ── Puente JavaScript para comunicación WebView <-> Android Nativo ──
+    inner class AndroidAuthBridge {
+        @JavascriptInterface
+        fun isAndroidApp(): Boolean = true
+
+        @JavascriptInterface
+        fun signInWithGoogle() {
+            launchGoogleSignIn()
+        }
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebView() {
         val settings = webView.settings
@@ -209,16 +396,24 @@ class MainActivity : ComponentActivity() {
             WebSettings.LOAD_CACHE_ELSE_NETWORK
         }
 
+        // User Agent optimizado para compatibilidad total con Google OAuth e identificación In-App
+        val rawUserAgent = settings.userAgentString
+        val cleanUserAgent = rawUserAgent.replace("; wv", "")
+                                         .replace(Regex("Version/\\d+\\.\\d+\\s*"), "") + " MDDormaApp/2.8"
+        settings.userAgentString = cleanUserAgent
+
         val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
         cookieManager.setAcceptThirdPartyCookies(webView, true)
+
+        // Registrar Puente JavaScript para autenticación nativa
+        webView.addJavascriptInterface(AndroidAuthBridge(), "AndroidAuth")
 
         webView.webViewClient = object : WebViewClient() {
             override fun onRenderProcessGone(
                 view: WebView?,
                 detail: RenderProcessGoneDetail?
             ): Boolean {
-                // Previene que la aplicación se cierre abruptamente si Chromium colapsa por falta de RAM
                 if (customView != null) {
                     exitFullscreenVideo()
                 }
@@ -252,7 +447,6 @@ class MainActivity : ComponentActivity() {
             ) {
                 super.onReceivedHttpError(view, request, errorResponse)
                 val code = errorResponse?.statusCode ?: return
-                // Errores de servidor 5xx (500, 502, 503, 504 - saturación o caída del servidor web)
                 if (request?.isForMainFrame == true && code >= 500) {
                     swipeRefreshLayout.isRefreshing = false
                     progressBar.visibility = View.GONE
@@ -287,12 +481,10 @@ class MainActivity : ComponentActivity() {
                 val uri = request?.url ?: return false
                 val url = uri.toString()
 
-                // Bloqueo de redirecciones y URLs de anuncios conocidas
                 if (isAdOrMaliciousUrl(url)) {
                     return true
                 }
 
-                // Si se está reproduciendo un video en pantalla completa, bloquear navegación publicitaria en segundo plano
                 if (customView != null && !url.contains("mddorma.com")) {
                     return true
                 }
@@ -302,7 +494,6 @@ class MainActivity : ComponentActivity() {
                     return false
                 }
 
-                // Bloquear esquemas abusivos usados por redes de anuncios (market:, intent:, etc.)
                 if (scheme == "intent" || scheme == "market") {
                     return true
                 }
@@ -318,13 +509,35 @@ class MainActivity : ComponentActivity() {
         }
 
         webView.webChromeClient = object : WebChromeClient() {
+            // Selector de archivos nativo (Fotos, imágenes, archivos)
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?
+            ): Boolean {
+                fileUploadCallback?.onReceiveValue(null)
+                fileUploadCallback = filePathCallback
+
+                val intent = fileChooserParams?.createIntent() ?: Intent(Intent.ACTION_GET_CONTENT).apply {
+                    type = "*/*"
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                }
+
+                return try {
+                    fileChooserLauncher.launch(intent)
+                    true
+                } catch (e: Exception) {
+                    fileUploadCallback = null
+                    false
+                }
+            }
+
             override fun onCreateWindow(
                 view: WebView?,
                 isDialog: Boolean,
                 isUserGesture: Boolean,
                 resultMsg: android.os.Message?
             ): Boolean {
-                // Bloquea la creación de ventanas emergentes (pop-ups publicitarios)
                 return false
             }
 
@@ -359,7 +572,6 @@ class MainActivity : ComponentActivity() {
                 webView.visibility = View.GONE
                 swipeRefreshLayout.isEnabled = false
 
-                // Pantalla siempre encendida durante la reproducción a pantalla completa
                 window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 fullscreenContainer.keepScreenOn = true
 
@@ -420,7 +632,6 @@ class MainActivity : ComponentActivity() {
         webView.visibility = View.VISIBLE
         swipeRefreshLayout.isEnabled = true
 
-        // Restaurar bandera de pantalla encendida y ocultar HUD
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         fullscreenContainer.keepScreenOn = false
         gestureHud.removeCallbacks(hideHudRunnable)
@@ -432,7 +643,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        // Modo Picture-in-Picture cuando el usuario sale de la app mientras ve un video
         if (customView != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             enterPiPMode()
         }
@@ -447,7 +657,7 @@ class MainActivity : ComponentActivity() {
                     .build()
                 enterPictureInPictureMode(pipParams)
             } catch (e: Exception) {
-                // Si el dispositivo no soporta PiP en este estado, continuar normalmente
+                // Device does not support PiP in this state
             }
         }
     }
@@ -499,7 +709,7 @@ class MainActivity : ComponentActivity() {
                 isDraggingFullscreenGesture = false
             }
             MotionEvent.ACTION_MOVE -> {
-                val deltaY = touchStartY - ev.y // Deslizar hacia arriba suma, hacia abajo resta
+                val deltaY = touchStartY - ev.y
                 val deltaX = Math.abs(ev.x - touchStartX)
 
                 if (Math.abs(deltaY) > 30 && Math.abs(deltaY) > deltaX) {
@@ -679,7 +889,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        // Liberar caché en RAM cuando el sistema tiene poca memoria
         if (level >= TRIM_MEMORY_MODERATE) {
             webView.clearCache(false)
         }
