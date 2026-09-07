@@ -2,5 +2,10 @@
     <string name="app_name">MDDorma</string>
     <string name="error_title">Sin conexión o error al cargar</string>
     <string name="error_message">No pudimos conectar con MDDorma. Por favor, verifica tu conexión a internet o intenta nuevamente.</string>
+    <string name="error_server_title">Servidores Ocupados</string>
+    <string name="error_server_message">Gran afluencia de usuarios en este momento. Los servidores están procesando las transmisiones. Toca reintentar o espera unos segundos.</string>
     <string name="retry">Reintentar</string>
+    <string name="toast_no_internet">Sin conexión a internet. Revisa tu conexión.</string>
+    <string name="toast_connection_lost">Se ha perdido la conexión a internet.</string>
+    <string name="toast_connection_restored">Conexión a internet restablecida.</string>
 </resources>

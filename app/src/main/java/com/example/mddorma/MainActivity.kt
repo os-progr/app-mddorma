@@ -1,25 +1,44 @@
 package com.example.mddorma
 
 import android.annotation.SuppressLint
+import android.app.PictureInPictureParams
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.media.AudioManager
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.util.Rational
+import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.core.view.ViewCompat
@@ -35,11 +54,38 @@ class MainActivity : ComponentActivity() {
     private lateinit var webView: WebView
     private lateinit var progressBar: ProgressBar
     private lateinit var fullscreenContainer: FrameLayout
-    private lateinit var errorLayout: LinearLayout
+    private lateinit var errorLayout: FrameLayout
+    private lateinit var errorIcon: ImageView
+    private lateinit var errorTitleText: TextView
+    private lateinit var errorMessageText: TextView
     private lateinit var retryButton: Button
+
+    private lateinit var gestureHud: LinearLayout
+    private lateinit var hudIcon: ImageView
+    private lateinit var hudProgressBar: ProgressBar
+    private lateinit var hudText: TextView
+    private lateinit var audioManager: AudioManager
 
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
+
+    private var connectivityManager: ConnectivityManager? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var isFirstNetworkCheck = true
+    private var lastFailedUrl: String? = null
+
+    private var touchStartX = 0f
+    private var touchStartY = 0f
+    private var isAdjustingBrightness = false
+    private var initialBrightness = 0.5f
+    private var initialVolume = 0
+    private var isDraggingFullscreenGesture = false
+
+    private val hideHudRunnable = Runnable {
+        gestureHud.animate().alpha(0f).setDuration(250).withEndAction {
+            gestureHud.visibility = View.GONE
+        }.start()
+    }
 
     companion object {
         private const val BASE_URL = "https://mddorma.com"
@@ -53,10 +99,20 @@ class MainActivity : ComponentActivity() {
         mainRoot = findViewById(R.id.main_root)
         swipeRefreshLayout = findViewById(R.id.swipe_refresh)
         webView = findViewById(R.id.webview)
+        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
         progressBar = findViewById(R.id.progress_bar)
         fullscreenContainer = findViewById(R.id.fullscreen_container)
         errorLayout = findViewById(R.id.error_layout)
+        errorIcon = findViewById(R.id.error_icon)
+        errorTitleText = findViewById(R.id.error_title_text)
+        errorMessageText = findViewById(R.id.error_message_text)
         retryButton = findViewById(R.id.retry_button)
+
+        gestureHud = findViewById(R.id.gesture_hud)
+        hudIcon = findViewById(R.id.hud_icon)
+        hudProgressBar = findViewById(R.id.hud_progress_bar)
+        hudText = findViewById(R.id.hud_text)
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
         // Paleta visual de MDDorma para SwipeRefreshLayout
         swipeRefreshLayout.setColorSchemeColors(
@@ -67,8 +123,18 @@ class MainActivity : ComponentActivity() {
         swipeRefreshLayout.setProgressBackgroundColorSchemeColor(Color.parseColor("#1F1F1F"))
 
         swipeRefreshLayout.setOnRefreshListener {
-            errorLayout.visibility = View.GONE
-            webView.reload()
+            if (!isOnline()) {
+                swipeRefreshLayout.isRefreshing = false
+                Toast.makeText(
+                    this@MainActivity,
+                    getString(R.string.toast_no_internet),
+                    Toast.LENGTH_SHORT
+                ).show()
+            } else {
+                hideErrorOverlay()
+                webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
+                webView.reload()
+            }
         }
 
         swipeRefreshLayout.setOnChildScrollUpCallback { _, _ ->
@@ -84,13 +150,23 @@ class MainActivity : ComponentActivity() {
         }
 
         retryButton.setOnClickListener {
-            errorLayout.visibility = View.GONE
-            progressBar.visibility = View.VISIBLE
-            swipeRefreshLayout.isRefreshing = true
-            webView.reload()
+            if (!isOnline()) {
+                Toast.makeText(
+                    this@MainActivity,
+                    getString(R.string.toast_no_internet),
+                    Toast.LENGTH_SHORT
+                ).show()
+            } else {
+                hideErrorOverlay()
+                progressBar.visibility = View.VISIBLE
+                swipeRefreshLayout.isRefreshing = true
+                val targetUrl = lastFailedUrl ?: webView.url ?: BASE_URL
+                webView.loadUrl(targetUrl)
+            }
         }
 
         setupWebView()
+        registerNetworkCallback()
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -99,8 +175,7 @@ class MainActivity : ComponentActivity() {
                 } else if (webView.canGoBack()) {
                     webView.goBack()
                 } else {
-                    isEnabled = false
-                    onBackPressedDispatcher.onBackPressed()
+                    finish()
                 }
             }
         })
@@ -124,14 +199,37 @@ class MainActivity : ComponentActivity() {
         settings.setSupportZoom(false)
         settings.mediaPlaybackRequiresUserGesture = false
         settings.allowFileAccess = true
+        settings.databaseEnabled = true
         settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-        settings.cacheMode = WebSettings.LOAD_DEFAULT
+        settings.javaScriptCanOpenWindowsAutomatically = false
+        settings.setSupportMultipleWindows(false)
+        settings.cacheMode = if (isOnline()) {
+            WebSettings.LOAD_DEFAULT
+        } else {
+            WebSettings.LOAD_CACHE_ELSE_NETWORK
+        }
 
         val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
         cookieManager.setAcceptThirdPartyCookies(webView, true)
 
         webView.webViewClient = object : WebViewClient() {
+            override fun onRenderProcessGone(
+                view: WebView?,
+                detail: RenderProcessGoneDetail?
+            ): Boolean {
+                // Previene que la aplicación se cierre abruptamente si Chromium colapsa por falta de RAM
+                if (customView != null) {
+                    exitFullscreenVideo()
+                }
+                view?.let { wv ->
+                    (wv.parent as? ViewGroup)?.removeView(wv)
+                    wv.destroy()
+                }
+                recreateWebView()
+                return true
+            }
+
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 progressBar.visibility = View.VISIBLE
@@ -142,6 +240,25 @@ class MainActivity : ComponentActivity() {
                 swipeRefreshLayout.isRefreshing = false
                 progressBar.visibility = View.GONE
                 CookieManager.getInstance().flush()
+                if (lastFailedUrl == null) {
+                    hideErrorOverlay()
+                }
+            }
+
+            override fun onReceivedHttpError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                errorResponse: WebResourceResponse?
+            ) {
+                super.onReceivedHttpError(view, request, errorResponse)
+                val code = errorResponse?.statusCode ?: return
+                // Errores de servidor 5xx (500, 502, 503, 504 - saturación o caída del servidor web)
+                if (request?.isForMainFrame == true && code >= 500) {
+                    swipeRefreshLayout.isRefreshing = false
+                    progressBar.visibility = View.GONE
+                    lastFailedUrl = request.url?.toString() ?: webView.url ?: BASE_URL
+                    showErrorOverlay(isServerError = true)
+                }
             }
 
             override fun onReceivedError(
@@ -153,7 +270,13 @@ class MainActivity : ComponentActivity() {
                 swipeRefreshLayout.isRefreshing = false
                 if (request?.isForMainFrame == true) {
                     progressBar.visibility = View.GONE
-                    errorLayout.visibility = View.VISIBLE
+                    lastFailedUrl = request.url?.toString() ?: webView.url ?: BASE_URL
+                    showErrorOverlay(isServerError = false)
+                    Toast.makeText(
+                        this@MainActivity,
+                        getString(R.string.toast_no_internet),
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
 
@@ -161,12 +284,31 @@ class MainActivity : ComponentActivity() {
                 view: WebView?,
                 request: WebResourceRequest?
             ): Boolean {
-                val url = request?.url?.toString() ?: return false
-                if (url.startsWith("http://") || url.startsWith("https://")) {
+                val uri = request?.url ?: return false
+                val url = uri.toString()
+
+                // Bloqueo de redirecciones y URLs de anuncios conocidas
+                if (isAdOrMaliciousUrl(url)) {
+                    return true
+                }
+
+                // Si se está reproduciendo un video en pantalla completa, bloquear navegación publicitaria en segundo plano
+                if (customView != null && !url.contains("mddorma.com")) {
+                    return true
+                }
+
+                val scheme = uri.scheme?.lowercase() ?: ""
+                if (scheme == "http" || scheme == "https") {
                     return false
                 }
+
+                // Bloquear esquemas abusivos usados por redes de anuncios (market:, intent:, etc.)
+                if (scheme == "intent" || scheme == "market") {
+                    return true
+                }
+
                 return try {
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                    val intent = Intent(Intent.ACTION_VIEW, uri)
                     startActivity(intent)
                     true
                 } catch (e: Exception) {
@@ -176,6 +318,16 @@ class MainActivity : ComponentActivity() {
         }
 
         webView.webChromeClient = object : WebChromeClient() {
+            override fun onCreateWindow(
+                view: WebView?,
+                isDialog: Boolean,
+                isUserGesture: Boolean,
+                resultMsg: android.os.Message?
+            ): Boolean {
+                // Bloquea la creación de ventanas emergentes (pop-ups publicitarios)
+                return false
+            }
+
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 super.onProgressChanged(view, newProgress)
                 if (newProgress in 1..99) {
@@ -207,13 +359,13 @@ class MainActivity : ComponentActivity() {
                 webView.visibility = View.GONE
                 swipeRefreshLayout.isEnabled = false
 
+                // Pantalla siempre encendida durante la reproducción a pantalla completa
+                window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                fullscreenContainer.keepScreenOn = true
+
                 mainRoot.setPadding(0, 0, 0, 0)
                 requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                WindowCompat.setDecorFitsSystemWindows(window, false)
-                val controller = WindowCompat.getInsetsController(window, window.decorView)
-                controller.hide(WindowInsetsCompat.Type.systemBars())
-                controller.systemBarsBehavior =
-                    WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                hideSystemBarsForFullscreen()
             }
 
             override fun onHideCustomView() {
@@ -221,6 +373,41 @@ class MainActivity : ComponentActivity() {
                 exitFullscreenVideo()
             }
         }
+    }
+
+    private fun isAdOrMaliciousUrl(url: String): Boolean {
+        val host = try { Uri.parse(url).host?.lowercase() ?: "" } catch (e: Exception) { "" }
+        if (host.contains("mddorma.com")) return false
+
+        val lower = url.lowercase()
+        val adIndicators = listOf(
+            "doubleclick", "popads", "popcash", "adsterra", "exoclick",
+            "propellerads", "adcash", "onclick", "highcpm", "whomepthe",
+            "syndication", "trafficjunky", "ad-delivery", "bet365", "1xbet",
+            "betting", "casino", "redirect", "banner", "tracking", "track",
+            "pushnotification", "monetag", "yllix", "hilltopads"
+        )
+        for (indicator in adIndicators) {
+            if (host.contains(indicator) || lower.contains(indicator)) return true
+        }
+        return false
+    }
+
+    private fun hideSystemBarsForFullscreen() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        controller.hide(WindowInsetsCompat.Type.statusBars() or WindowInsetsCompat.Type.navigationBars())
+        controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    }
+
+    private fun showSystemBarsAfterFullscreen() {
+        WindowCompat.setDecorFitsSystemWindows(window, true)
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        controller.show(WindowInsetsCompat.Type.statusBars() or WindowInsetsCompat.Type.navigationBars())
+        controller.isAppearanceLightStatusBars = false
+        controller.isAppearanceLightNavigationBars = false
+        ViewCompat.requestApplyInsets(mainRoot)
     }
 
     private fun exitFullscreenVideo() {
@@ -233,13 +420,136 @@ class MainActivity : ComponentActivity() {
         webView.visibility = View.VISIBLE
         swipeRefreshLayout.isEnabled = true
 
+        // Restaurar bandera de pantalla encendida y ocultar HUD
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        fullscreenContainer.keepScreenOn = false
+        gestureHud.removeCallbacks(hideHudRunnable)
+        gestureHud.visibility = View.GONE
+
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_USER
-        WindowCompat.setDecorFitsSystemWindows(window, true)
-        val controller = WindowCompat.getInsetsController(window, window.decorView)
-        controller.show(WindowInsetsCompat.Type.systemBars())
-        controller.isAppearanceLightStatusBars = false
-        controller.isAppearanceLightNavigationBars = false
-        ViewCompat.requestApplyInsets(mainRoot)
+        showSystemBarsAfterFullscreen()
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        // Modo Picture-in-Picture cuando el usuario sale de la app mientras ve un video
+        if (customView != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            enterPiPMode()
+        }
+    }
+
+    private fun enterPiPMode() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                val aspectRatio = Rational(16, 9)
+                val pipParams = PictureInPictureParams.Builder()
+                    .setAspectRatio(aspectRatio)
+                    .build()
+                enterPictureInPictureMode(pipParams)
+            } catch (e: Exception) {
+                // Si el dispositivo no soporta PiP en este estado, continuar normalmente
+            }
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        if (isInPictureInPictureMode) {
+            gestureHud.removeCallbacks(hideHudRunnable)
+            gestureHud.visibility = View.GONE
+            errorLayout.visibility = View.GONE
+            progressBar.visibility = View.GONE
+        }
+    }
+
+    private fun showGestureHud() {
+        gestureHud.removeCallbacks(hideHudRunnable)
+        gestureHud.alpha = 1f
+        gestureHud.visibility = View.VISIBLE
+    }
+
+    private fun scheduleHideGestureHud() {
+        gestureHud.removeCallbacks(hideHudRunnable)
+        gestureHud.postDelayed(hideHudRunnable, 1200)
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (customView != null) {
+            val handled = handleFullscreenTouchGesture(ev)
+            if (handled) return true
+        }
+        return super.dispatchTouchEvent(ev)
+    }
+
+    private fun handleFullscreenTouchGesture(ev: MotionEvent): Boolean {
+        val screenWidth = resources.displayMetrics.widthPixels
+        val screenHeight = resources.displayMetrics.heightPixels
+
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                touchStartX = ev.x
+                touchStartY = ev.y
+                isAdjustingBrightness = ev.x < (screenWidth / 2f)
+                val currentBrightness = window.attributes.screenBrightness
+                initialBrightness = if (currentBrightness < 0) 0.5f else currentBrightness
+                initialVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                isDraggingFullscreenGesture = false
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val deltaY = touchStartY - ev.y // Deslizar hacia arriba suma, hacia abajo resta
+                val deltaX = Math.abs(ev.x - touchStartX)
+
+                if (Math.abs(deltaY) > 30 && Math.abs(deltaY) > deltaX) {
+                    isDraggingFullscreenGesture = true
+                    val fraction = deltaY / (screenHeight * 0.65f)
+
+                    if (isAdjustingBrightness) {
+                        val newBrightness = (initialBrightness + fraction).coerceIn(0.01f, 1.0f)
+                        val lp = window.attributes
+                        lp.screenBrightness = newBrightness
+                        window.attributes = lp
+
+                        val percent = (newBrightness * 100).toInt()
+                        hudIcon.setImageResource(R.drawable.ic_brightness)
+                        hudProgressBar.progress = percent
+                        hudProgressBar.progressTintList = ColorStateList.valueOf(Color.parseColor("#FBBF24"))
+                        hudText.text = "$percent%"
+                        showGestureHud()
+                    } else {
+                        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                        val deltaVol = (fraction * maxVol).toInt()
+                        val newVol = (initialVolume + deltaVol).coerceIn(0, maxVol)
+                        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, newVol, 0)
+
+                        val percent = if (maxVol > 0) ((newVol.toFloat() / maxVol) * 100).toInt() else 0
+                        hudIcon.setImageResource(R.drawable.ic_volume)
+                        hudProgressBar.progress = percent
+                        hudProgressBar.progressTintList = ColorStateList.valueOf(Color.parseColor("#A855F7"))
+                        hudText.text = "$percent%"
+                        showGestureHud()
+                    }
+                    return true
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (isDraggingFullscreenGesture) {
+                    scheduleHideGestureHud()
+                    isDraggingFullscreenGesture = false
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && customView != null) {
+            hideSystemBarsForFullscreen()
+        }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -269,7 +579,140 @@ class MainActivity : ComponentActivity() {
         webView.onPause()
     }
 
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            if (customView != null) {
+                exitFullscreenVideo()
+                return true
+            }
+            if (webView.canGoBack()) {
+                webView.goBack()
+                return true
+            }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    private fun isOnline(): Boolean {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
+        val activeNetwork = cm.activeNetwork ?: return false
+        val capabilities = cm.getNetworkCapabilities(activeNetwork) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    private fun registerNetworkCallback() {
+        connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val builder = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        networkCallback = object : ConnectivityManager.NetworkCallback() {
+            override fun onLost(network: Network) {
+                runOnUiThread {
+                    webView.settings.cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
+                    Toast.makeText(
+                        this@MainActivity,
+                        getString(R.string.toast_connection_lost),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+
+            override fun onAvailable(network: Network) {
+                runOnUiThread {
+                    webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
+                    if (!isFirstNetworkCheck) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            getString(R.string.toast_connection_restored),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        if (errorLayout.visibility == View.VISIBLE) {
+                            val targetUrl = lastFailedUrl ?: webView.url ?: BASE_URL
+                            hideErrorOverlay()
+                            progressBar.visibility = View.VISIBLE
+                            webView.loadUrl(targetUrl)
+                        }
+                    }
+                    isFirstNetworkCheck = false
+                }
+            }
+        }
+        networkCallback?.let {
+            connectivityManager?.registerNetworkCallback(builder.build(), it)
+        }
+    }
+
+    private fun showErrorOverlay(isServerError: Boolean = false) {
+        if (isServerError) {
+            errorIcon.setImageResource(R.drawable.ic_cloud_off)
+            errorTitleText.text = getString(R.string.error_server_title)
+            errorMessageText.text = getString(R.string.error_server_message)
+        } else {
+            errorIcon.setImageResource(R.drawable.ic_wifi_off)
+            errorTitleText.text = getString(R.string.error_title)
+            errorMessageText.text = getString(R.string.error_message)
+        }
+        if (errorLayout.visibility == View.VISIBLE) return
+        errorLayout.alpha = 0f
+        errorLayout.visibility = View.VISIBLE
+        errorLayout.animate().alpha(1f).setDuration(250).start()
+    }
+
+    private fun recreateWebView() {
+        try {
+            swipeRefreshLayout.removeView(webView)
+        } catch (e: Exception) {
+            // Ignore
+        }
+        webView = WebView(this).apply {
+            id = R.id.webview
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        }
+        swipeRefreshLayout.addView(webView)
+        setupWebView()
+        val targetUrl = lastFailedUrl ?: BASE_URL
+        webView.loadUrl(targetUrl)
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // Liberar caché en RAM cuando el sistema tiene poca memoria
+        if (level >= TRIM_MEMORY_MODERATE) {
+            webView.clearCache(false)
+        }
+        if (level >= TRIM_MEMORY_UI_HIDDEN) {
+            CookieManager.getInstance().flush()
+        }
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        webView.clearCache(false)
+    }
+
+    private fun hideErrorOverlay() {
+        if (errorLayout.visibility == View.GONE) return
+        errorLayout.animate().alpha(0f).setDuration(200).withEndAction {
+            errorLayout.visibility = View.GONE
+            lastFailedUrl = null
+        }.start()
+    }
+
+    private fun unregisterNetworkCallback() {
+        networkCallback?.let {
+            try {
+                connectivityManager?.unregisterNetworkCallback(it)
+            } catch (e: Exception) {
+                // Ignore
+            }
+        }
+    }
+
     override fun onDestroy() {
+        unregisterNetworkCallback()
         if (customView != null) {
             exitFullscreenVideo()
         }
