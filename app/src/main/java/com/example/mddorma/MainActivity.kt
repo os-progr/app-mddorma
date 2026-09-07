@@ -318,20 +318,21 @@ class MainActivity : ComponentActivity() {
                 writer.close()
 
                 val responseCode = conn.responseCode
-                val reader = BufferedReader(InputStreamReader(if (responseCode in 200..299) conn.inputStream else conn.errorStream))
-                val responseBody = reader.use { it.readText() }
-                conn.disconnect()
 
-                // Extraer y guardar las nuevas cookies de sesión (PHPSESSID) devueltas por el servidor
+                // Extraer cookies de sesión ANTES de leer el body y ANTES de disconnect()
+                val cookieManager = CookieManager.getInstance()
                 val headerFields = conn.headerFields
-                val cookiesHeader = headerFields["Set-Cookie"]
+                val cookiesHeader = headerFields["Set-Cookie"] ?: headerFields["set-cookie"]
                 if (cookiesHeader != null) {
-                    val cookieManager = CookieManager.getInstance()
                     for (cookie in cookiesHeader) {
                         cookieManager.setCookie(BASE_URL, cookie)
                     }
                     cookieManager.flush()
                 }
+
+                val reader = BufferedReader(InputStreamReader(if (responseCode in 200..299) conn.inputStream else conn.errorStream))
+                val responseBody = reader.use { it.readText() }
+                conn.disconnect()
 
                 val json = try { JSONObject(responseBody) } catch (e: Exception) { JSONObject() }
                 val success = json.optBoolean("success", false)
@@ -340,13 +341,15 @@ class MainActivity : ComponentActivity() {
                     progressBar.visibility = View.GONE
                     if (success) {
                         Toast.makeText(this@MainActivity, "¡Bienvenido, $userName!", Toast.LENGTH_LONG).show()
-                        // Recargar la página actual o ir a perfil con sesión activa
-                        val current = webView.url ?: BASE_URL
-                        if (current.contains("ingresar.php")) {
-                            webView.loadUrl(BASE_URL)
-                        } else {
-                            webView.reload()
-                        }
+                        // Esperar 400ms para garantizar que las cookies de sesión se persistan al WebView
+                        webView.postDelayed({
+                            val current = webView.url ?: BASE_URL
+                            if (current.contains("ingresar.php")) {
+                                webView.loadUrl(BASE_URL)
+                            } else {
+                                webView.reload()
+                            }
+                        }, 400)
                     } else {
                         val msg = json.optString("message", "Error al sincronizar con el servidor")
                         Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
